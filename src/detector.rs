@@ -379,17 +379,17 @@ impl Detector {
         }
 
         // patch 29: add keepalive to response stream
-        let (stx, srx) = channel::<KeepAliveThreadMsg>();
-        match create_keepalive_thread(self.response_stream.as_ref().unwrap().try_clone().unwrap(), srx, "response".to_string()) {
-            Ok(h) => {
-                self.response_keepalive_sender = Some(stx);
-                self.response_keepalive_handle = Some(h)
-            }
-            Err(_) => {
-                error!("Failedo keepalive response")
-                return Err(SysError::Connection("Failed to keepalive response"))
-            }
-        }
+        // let (stx, srx) = channel::<KeepAliveThreadMsg>();
+        // match create_keepalive_thread(self.response_stream.as_ref().unwrap().try_clone().unwrap(), srx, "response".to_string()) {
+            // Ok(h) => {
+                // self.response_keepalive_sender = Some(stx);
+                // self.response_keepalive_handle = Some(h)
+            // }
+            // Err(_) => {
+                // error!("Failedo keepalive response")
+                // return Err(SysError::Connection("Failed to keepalive response"))
+            // }
+        // }
         
         // patch 28: add keepalive to the root stream
         let (rtx, rrx) = channel::<KeepAliveThreadMsg>();
