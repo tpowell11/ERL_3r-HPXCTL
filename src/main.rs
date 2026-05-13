@@ -1,12 +1,12 @@
 mod commands;
+mod config;
 mod detector;
 mod detector_config;
 mod http_helper;
-mod local_tcp;
 mod image;
+mod local_tcp;
 mod ping_helper;
 mod tcp_helper;
-mod config;
 use crate::detector::Detector;
 use crate::http_helper::{err, resp_200, resp_200_plain, resp_204, resp_400, resp_404, resp_500};
 use log::{info, trace, warn};
@@ -19,23 +19,24 @@ fn main() -> ! {
     println!("Loading...");
     let t0 = SystemTime::now();
     env_logger::Builder::from_default_env()
-        .format(
-            move |buf, record| {
-                writeln!(
-                    buf,
-                    "T:{} ID:{:x} [{}/{}] {}",
-                    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-                    SystemTime::now().duration_since(t0).unwrap().as_nanos() as u64,
-                    record.file().unwrap(),
-                    record.line().unwrap(),
-                    record.args()
-                )
-            }
-        )
+        .format(move |buf, record| {
+            writeln!(
+                buf,
+                "T:{} ID:{:x} [{}/{}] {}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                SystemTime::now().duration_since(t0).unwrap().as_nanos() as u64,
+                record.file().unwrap(),
+                record.line().unwrap(),
+                record.args()
+            )
+        })
         .init();
     info!("Initialized logging");
     let conf = config::Config::load();
-    let mut detector = Detector::new();
+    let mut detector = Detector::new(&conf);
     let address = ("0.0.0.0", conf.server_port);
     let http_server = Server::http(address).unwrap();
     info!("Started server");
@@ -152,12 +153,7 @@ fn main() -> ! {
                         }
                     };
                     match detector.get_image(uuid) {
-                        Ok(image_data) => {
-                            r.respond(resp_200(
-                                image_data.as_bytes(),
-                            ))
-                            .unwrap()
-                        }
+                        Ok(image_data) => r.respond(resp_200(image_data.as_bytes())).unwrap(),
                         Err(detector::SysError::UnknownID(_)) => r
                             .respond(resp_404(err(000, "UUID Not Found").as_bytes()))
                             .unwrap(),

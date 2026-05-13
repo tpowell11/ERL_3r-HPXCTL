@@ -1,4 +1,3 @@
-
 use crate::VERSION;
 // use crate::commands::Command;
 use crate::detector_config::DetectorConfig;
@@ -7,8 +6,8 @@ use crate::ping_helper::{PingThreadMsg, create_ping_thread};
 use crate::tcp_helper::{KeepAliveThreadMsg, create_keepalive_thread, create_log_thread};
 use log::error;
 use log::{info, trace, warn};
-use pnet::packet::tcp::TcpOption;
 use pnet::util::MacAddr;
+use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, SockAddr, Socket, TcpKeepalive, Type};
 use std::collections::VecDeque;
@@ -20,18 +19,13 @@ use std::thread::{JoinHandle, sleep};
 use std::time::{Duration, SystemTime};
 use std::{u64, vec};
 use uuid::Uuid;
-use rand::prelude::*;
-use std::sync::LazyLock;
-
-pub const DETECTOR_IPV4: IpAddr = IpAddr::V4(Ipv4Addr::new(10, 0, 1, 150));
-static DETECTOR_MAC: LazyLock<MacAddr> = LazyLock::new(|| MacAddr::new(0x00, 0x1d, 0x4a, 0x01, 0xe0, 0xbd));
 
 pub const BASE_PORT: u16 = 60_000;
 pub const REMOTE_IMAGE_PORT_OS: u16 = 1;
 pub const REMOTE_LOG_PORT_OS: u16 = 2;
 pub const REMOTE_RESPONSE_PORT_OS: u16 = 4;
 
-type Command = (& 'static str, Option<String>);
+type Command = (&'static str, Option<String>);
 type Return = (usize, String);
 fn back_value<T: FromStr>(v: Return) -> Option<T> {
     let split: VecDeque<String> = v.1.split_whitespace().map(|s| s.to_string()).collect();
@@ -159,12 +153,14 @@ pub struct Detector {
     local_response_port: u16,
     /// Local image input port
     local_image_port: u16,
+    // program interface config
+    ifconfig: crate::config::Config,
 }
 
 impl Detector {
     /// Constructs a "zeroed" instance of [`crate::detector::Detector`].
     /// All stream options are set to `None`.
-    pub fn new() -> Self {
+    pub fn new(config: &crate::config::Config) -> Self {
         Self {
             command_count: 2_u64, // patch 7 REVERTED patch 21.1
             config: DetectorConfig::default(),
@@ -193,6 +189,7 @@ impl Detector {
             local_log_port: 0,
             local_response_port: 0,
             local_image_port: 0,
+            ifconfig: config.clone(),
         }
     }
     /// Initializes communication with the detector and begins keepalive procedures.
@@ -204,14 +201,23 @@ impl Detector {
             return Err(SysError::Connection("Already connected"));
         }
 
+        let detector_ipv4: Ipv4Addr = Ipv4Addr::from_str(self.ifconfig.detector_ip.as_str())
+            .expect("Invalid detector IPv4 in config.");
+        let detector_mac: MacAddr = MacAddr::from_str(self.ifconfig.detector_mac.as_str())
+            .expect("Invalid MAC address in config");
         // patch 23: remove arp
         // patch 23: implement hail ping
         let (ptx, prx) = channel::<PingThreadMsg>();
-        match create_ping_thread(IpAddr::V4(Ipv4Addr::new(10, 0, 1, 150)),ifname,prx, Duration::from_millis(1000)){
+        match create_ping_thread(
+            IpAddr::V4(detector_ipv4),
+            ifname,
+            prx,
+            Duration::from_millis(1000),
+        ) {
             Ok(h) => {
                 self.ping_thread_sender = Some(ptx);
                 self.ping_thread_handle = Some(h);
-            },
+            }
             Err(e) => {
                 error!("Failed to start ping thread: {e:?}");
                 return Err(SysError::Connection("Failed to start ping thread"));
@@ -220,7 +226,7 @@ impl Detector {
 
         info!(
             "Connecting to detector at {:?}:{:?}",
-            DETECTOR_IPV4, BASE_PORT
+            detector_ipv4, BASE_PORT
         );
         let detector_socket = match Socket::new(Domain::IPV4, Type::STREAM, None) {
             Ok(s) => s,
@@ -230,7 +236,7 @@ impl Detector {
             }
         };
         let detector_socket_address = SockAddr::from(SocketAddrV4::new(
-            DETECTOR_IPV4.to_string().parse::<Ipv4Addr>().unwrap(),
+            detector_ipv4.to_string().parse::<Ipv4Addr>().unwrap(),
             BASE_PORT,
         ));
         match detector_socket.connect(&detector_socket_address) {
@@ -277,7 +283,7 @@ impl Detector {
             }
             1.. => {
                 let text = String::from_utf8(init_buf).unwrap();
-                let vd: VecDeque<String> = text.split_whitespace().map(|s|s.to_string()).collect();
+                let vd: VecDeque<String> = text.split_whitespace().map(|s| s.to_string()).collect();
                 let new_port = match vd.back().unwrap().parse::<u16>() {
                     Ok(v) => {
                         info!("Reserve succeeded");
@@ -297,10 +303,9 @@ impl Detector {
                 info!("Remote log port is: {}", self.remote_log_port);
                 info!("Remote response port is: {}", self.remote_response_port);
 
-
                 // TCP STREAM CREATION
                 self.response_stream =
-                    match TcpStream::connect((DETECTOR_IPV4, self.remote_response_port)) {
+                    match TcpStream::connect((detector_ipv4, self.remote_response_port)) {
                         Ok(s) => {
                             info!("Opened response stream (HOST <- REMOTE)");
                             Some(s)
@@ -311,7 +316,7 @@ impl Detector {
                         }
                     };
                 self.image_stream =
-                    match TcpStream::connect((DETECTOR_IPV4, self.remote_image_port)) {
+                    match TcpStream::connect((detector_ipv4, self.remote_image_port)) {
                         Ok(s) => {
                             info!("Opened image stream (HOST <- REMOTE)");
                             Some(s)
@@ -321,7 +326,7 @@ impl Detector {
                             return Err(SysError::Connection("Failed to open image stream"));
                         }
                     };
-                self.log_stream = match TcpStream::connect((DETECTOR_IPV4, self.remote_log_port)) {
+                self.log_stream = match TcpStream::connect((detector_ipv4, self.remote_log_port)) {
                     Ok(s) => {
                         info!("Opened log stream (HOST <- REMOTE)");
                         Some(s)
@@ -332,7 +337,7 @@ impl Detector {
                     }
                 };
                 self.command_stream =
-                    match TcpStream::connect((DETECTOR_IPV4, self.remote_command_port)) {
+                    match TcpStream::connect((detector_ipv4, self.remote_command_port)) {
                         Ok(s) => {
                             info!("Opened command stream (HOST -> REMOTE)");
                             Some(s)
@@ -352,7 +357,6 @@ impl Detector {
         // patch 28: dont kill the root stream maybe
         self.root_stream = Some(init_stream);
 
-
         // patch 23: remove gratuitous TCP keepalives & refactor
         // patch 23: use new keepalive implementation
         //let (ttx, trx) = channel::<KeepAliveThreadMsg>();
@@ -369,9 +373,7 @@ impl Detector {
 
         // patch 23.4: keepalive on log thread
         match create_log_thread(self.log_stream.as_ref().unwrap().try_clone().unwrap()) {
-            Ok(h) => {
-                self.log_keepalive_handle = Some(h)
-            }
+            Ok(h) => self.log_keepalive_handle = Some(h),
             Err(_) => {
                 error!("Failed to start log keepalive thread.");
                 return Err(SysError::Connection("Failed to start log keepalive thread"));
@@ -381,16 +383,16 @@ impl Detector {
         // patch 29: add keepalive to response stream
         // let (stx, srx) = channel::<KeepAliveThreadMsg>();
         // match create_keepalive_thread(self.response_stream.as_ref().unwrap().try_clone().unwrap(), srx, "response".to_string()) {
-            // Ok(h) => {
-                // self.response_keepalive_sender = Some(stx);
-                // self.response_keepalive_handle = Some(h)
-            // }
-            // Err(_) => {
-                // error!("Failedo keepalive response")
-                // return Err(SysError::Connection("Failed to keepalive response"))
-            // }
+        // Ok(h) => {
+        // self.response_keepalive_sender = Some(stx);
+        // self.response_keepalive_handle = Some(h)
         // }
-        
+        // Err(_) => {
+        // error!("Failedo keepalive response")
+        // return Err(SysError::Connection("Failed to keepalive response"))
+        // }
+        // }
+
         // patch 28: add keepalive to the root stream
         //let (rtx, rrx) = channel::<KeepAliveThreadMsg>();
         //match create_keepalive_thread(self.root_stream.as_ref().unwrap().try_clone().unwrap(), rrx, "root".to_string()) {
@@ -408,9 +410,9 @@ impl Detector {
 
         // 26.2 enable logging to async/log port
         match self.command2(("GetLog", None)) {
-            Ok((_,t)) => info!("Enabled logging: {t}"),
-            Err(e)  => warn!("Failed to enable logging: {e:?}")
-        }; 
+            Ok((_, t)) => info!("Enabled logging: {t}"),
+            Err(e) => warn!("Failed to enable logging: {e:?}"),
+        };
         info!("Connection successful");
         // 26.2 remove state print
         return Ok(());
@@ -426,25 +428,54 @@ impl Detector {
         // patch 26.2 testing abbrv. config with proper syntax this time...
         let script: Vec<Command> = vec![
             ("Config", None), //enter config mode
-            ("Set TriggerSource", Some(self.config.trigger_source.to_string())),
+            (
+                "Set TriggerSource",
+                Some(self.config.trigger_source.to_string()),
+            ),
             ("Set Preview", Some(self.config.preview.to_string())),
-            ("Set OffsetAdjustmentCorrectionOn", Some(self.config.offset_adjustment_correction.to_string())),
-            ("Set GainCorrectionOn", Some(self.config.gain_correction.to_string())),
-            ("Set DefectCorrectionOn", Some(self.config.defect_correction_on.to_string())),
-            ("Set GridCorrectionOn", Some(self.config.grid_correction.to_string())),
-            ("Set NumDarkImgs", Some(self.config.num_dark_images.to_string())),
-            ("Set CaptureMode", Some(self.config.capture_mode.to_string())),
-            ("Set IntegrationTime", Some(self.config.integration_time.to_string())),
+            (
+                "Set OffsetAdjustmentCorrectionOn",
+                Some(self.config.offset_adjustment_correction.to_string()),
+            ),
+            (
+                "Set GainCorrectionOn",
+                Some(self.config.gain_correction.to_string()),
+            ),
+            (
+                "Set DefectCorrectionOn",
+                Some(self.config.defect_correction_on.to_string()),
+            ),
+            (
+                "Set GridCorrectionOn",
+                Some(self.config.grid_correction.to_string()),
+            ),
+            (
+                "Set NumDarkImgs",
+                Some(self.config.num_dark_images.to_string()),
+            ),
+            (
+                "Set CaptureMode",
+                Some(self.config.capture_mode.to_string()),
+            ),
+            (
+                "Set IntegrationTime",
+                Some(self.config.integration_time.to_string()),
+            ),
             ("Set NumPreDarks", Some("0".to_string())),
-            ("Set BinningMode", Some(self.config.binning_mode.to_string())),
+            (
+                "Set BinningMode",
+                Some(self.config.binning_mode.to_string()),
+            ),
             ("Set HSDataPath", Some(self.config.hs_data_path.to_string())),
             ("Set ImagingSubMode", Some("0".to_string())),
             ("Set NumPreCaptures", Some("0".to_string())),
             ("Set NumPreDarks", Some("0".to_string())),
-            ("Set NumberImagesInSequence", Some(self.config.number_images_in_sequence.to_string())),
+            (
+                "Set NumberImagesInSequence",
+                Some(self.config.number_images_in_sequence.to_string()),
+            ),
             ("Set AutoRearmPolicy", Some("0".to_string())),
-            ("Set IntegrationTime", Some("100".to_string()))
-            // there may need to be a ("Config", None) here (26.2)
+            ("Set IntegrationTime", Some("100".to_string())), // there may need to be a ("Config", None) here (26.2)
         ];
 
         info!("Executing configuration script...");
@@ -476,12 +507,12 @@ impl Detector {
             ("Get DiagType", None),
             ("Get InactivityTimeout", None),
             ("Get CaptureMode", None),
-            ("Get NumberImagesInSequence",None),
+            ("Get NumberImagesInSequence", None),
             ("Get TopBorder", None),
             ("Get BottomBorder", None),
             ("Get LeftBorder", None),
             ("Get RightBorder", None),
-            ("Get OffsetAdjustmentCorrectionOn",None),
+            ("Get OffsetAdjustmentCorrectionOn", None),
             ("Get GainCorrectionOn", None),
             ("Get DefectCorrectionOn", None),
             ("Get GridCorrectionOn", None),
@@ -531,7 +562,7 @@ impl Detector {
         info!("Capturing image with ID: {}", new_id.to_string());
 
         // columns
-        if let Ok(cols) =self.command2(("Get NumImgCols", None)) {
+        if let Ok(cols) = self.command2(("Get NumImgCols", None)) {
             let icols = match back_value::<usize>(cols) {
                 Some(columns) => columns,
                 None => {
@@ -541,7 +572,7 @@ impl Detector {
             };
             new_image.set_cols(icols);
         } else {
-            return Err(SysError::Internal("Failed to get image columns"))
+            return Err(SysError::Internal("Failed to get image columns"));
         }
 
         // rows
@@ -568,7 +599,7 @@ impl Detector {
         let _ = self.command2(("ClearFault", Some("0".to_string())));
         let _ = self.command2(("BeginStudy", None));
         let _ = self.command2(("OrphImgs", None));
-        
+
         //four clearfaults for flavour ig
         let _ = self.command2(("ClearFault", Some("0".to_string())));
         let _ = self.command2(("ClearFault", Some("0".to_string())));
@@ -579,10 +610,9 @@ impl Detector {
         let _ = self.command2(("AbortImage", None));
         let _ = self.command2(("OrphImgs", None));
 
-
         //let _ = self.command2(("Set NumberImagesInSequence", Some(self.config.number_images_in_sequence.to_string())));
         //let _ = self.command2(("Set ImageReadyDelivery", Some(self.config.image_ready_delivery.to_string())));
-        
+
         // INNER CONFIG
         let icscript = vec![
             ("Set TriggerSource", Some("0".to_string())),
@@ -592,43 +622,43 @@ impl Detector {
             ("DefectCorrectionOn", Some("0".to_string())),
             ("GridCorrectionOn", Some("0".to_string())),
             ("NumDarkImgs", Some("0".to_string())),
-            ("Set CaptureMode",Some("4".to_string())),
-            ("Set IntegrationTime",Some("1100".to_string())),
-            ("Set NumPreCaptures",Some("0".to_string())),
-            ("Set NumPreDarks",Some("0".to_string())),
-            ("Set BinningMode",Some("0".to_string())),
-            ("Set HSDataPath",Some("0".to_string())),
-            ("Set ImagingSubMode",Some("0".to_string())),
-            ("Set NumPreCaptures",Some("0".to_string())),
-            ("Set NumPreDarks",Some("0".to_string())),
-            ("Set NumDarkImgs",Some("0".to_string())),
-            ("Set NumberImagesInSequence",Some("0".to_string())),
-            ("Set AutoRearmPolicy",Some("0".to_string())),
-            ("Set IntegrationTime",Some("100".to_string())),
+            ("Set CaptureMode", Some("4".to_string())),
+            ("Set IntegrationTime", Some("1100".to_string())),
+            ("Set NumPreCaptures", Some("0".to_string())),
+            ("Set NumPreDarks", Some("0".to_string())),
+            ("Set BinningMode", Some("0".to_string())),
+            ("Set HSDataPath", Some("0".to_string())),
+            ("Set ImagingSubMode", Some("0".to_string())),
+            ("Set NumPreCaptures", Some("0".to_string())),
+            ("Set NumPreDarks", Some("0".to_string())),
+            ("Set NumDarkImgs", Some("0".to_string())),
+            ("Set NumberImagesInSequence", Some("0".to_string())),
+            ("Set AutoRearmPolicy", Some("0".to_string())),
+            ("Set IntegrationTime", Some("100".to_string())),
         ];
-        let _  = self.script(icscript);
+        let _ = self.script(icscript);
 
         // FAKE ARM
         // generate a random uuid for the fake arm
         let mut rng = rand::rng();
-        let fakeuuid = Uuid::from_u128(
-            rng.random::<u128>()
-        ).as_hyphenated().to_string();
-        let _ = self.command2((
-            "Arm",
-            Some(format!("Norm {fakeuuid}"))
-        ));
-        let _ = self.command2(("Trigger",None));
+        let fakeuuid = Uuid::from_u128(rng.random::<u128>())
+            .as_hyphenated()
+            .to_string();
+        let _ = self.command2(("Arm", Some(format!("Norm {fakeuuid}"))));
+        let _ = self.command2(("Trigger", None));
         sleep(Duration::from_secs(1)); // 1361-1470 refcap001.pcapng
-        let _ = self.command2(("OrphImgs",None)); //26.10 fixed 
+        let _ = self.command2(("OrphImgs", None)); //26.10 fixed 
 
         // REAL ARM
-        let _ = self.command2(("Set NumberImagesInSequence", Some(self.config.number_images_in_sequence.to_string())));
-        let _ = self.command2(("Set IntegrationTime", Some(self.config.integration_time.to_string())));
         let _ = self.command2((
-            "Arm",
-            Some(format!("Norm {}", new_id.to_string()))
+            "Set NumberImagesInSequence",
+            Some(self.config.number_images_in_sequence.to_string()),
         ));
+        let _ = self.command2((
+            "Set IntegrationTime",
+            Some(self.config.integration_time.to_string()),
+        ));
+        let _ = self.command2(("Arm", Some(format!("Norm {}", new_id.to_string()))));
         let _ = self.command2(("Trigger", None));
 
         // HOLD FOR CAPTURE TIME
@@ -639,25 +669,25 @@ impl Detector {
         info!("Attempting image retrieval...");
         let _ = self.command2((
             "ExportImageEx",
-            Some(format!("{} NormCor", new_id.to_string()))
+            Some(format!("{} NormCor", new_id.to_string())),
         ));
-        
+
         // patch 13: img ret w bufreader
         // patch 26.2: actually implement this correctly, only using read
         // patch 26.7: yeah this needs to be threaded to handle the CaptureCompletes
         // patch 26.8: redo into inline exec, just check the log stream for 0000XXXXCaptureComplete 0 XXX 0 every iter.
         // patch 26.11: use the expected number of bytes to terminate 'rxl
         info!("Reading image data...");
-        let mut image_data_buffer:Vec<u8> = Vec::new();
+        let mut image_data_buffer: Vec<u8> = Vec::new();
         let mut total_bytes: usize = 0;
         let expected_bytes = 2560 * 3072 * 2; // 15728640
         let t_start = SystemTime::now();
         'rxl: loop {
             let mut iter_buffer = [0_u8; 1460]; // much more reasonable buffer
-            match self.image_stream.as_ref().unwrap().read(& mut iter_buffer) {
+            match self.image_stream.as_ref().unwrap().read(&mut iter_buffer) {
                 Ok(bytes) => {
-                        image_data_buffer.extend_from_slice(&iter_buffer[..bytes]);
-                        total_bytes += bytes
+                    image_data_buffer.extend_from_slice(&iter_buffer[..bytes]);
+                    total_bytes += bytes
                 }
                 Err(e) => {
                     error!("Error reading image data: {e:?}");
@@ -674,20 +704,18 @@ impl Detector {
             }
         }
 
-        
-
         info!("Got {} bytes", image_data_buffer.len());
         // 26.2 assuming the first 0x230 bytes are metadata we don't need:
-        new_image.push_data(image_data_buffer[(0x230-0x2e)..].to_vec());
+        new_image.push_data(image_data_buffer[(0x230 - 0x2e)..].to_vec());
         self.images.push(new_image);
         info!("Image stream status{:?}", self.image_stream);
         // 26.8 trace!("image buffer: {idb:?}"); // 26.3
         return Ok(());
     }
     /// Returns JSON containing the image pixel data and metadata.
-    /// The image data is not stored as a single, 1D array. 
+    /// The image data is not stored as a single, 1D array.
     /// The client is expected to use the width and height data to reconstruct the images once they are recieved.
-    pub fn get_image(& mut self, id: Uuid) -> Result<String, SysError> {
+    pub fn get_image(&mut self, id: Uuid) -> Result<String, SysError> {
         //ensure we have the detector identifying information
         if self.detectorinfo.is_none() {
             if let Err(e) = self.get_detectorinfo() {
@@ -708,11 +736,9 @@ impl Detector {
                 //26.16 fix the byte conversion again
                 let mut buf_16: Vec<u16> = Vec::new();
                 for bytes in imdata.chunks(2) {
-                    buf_16.push(
-                        u16::from_le_bytes([bytes[0],bytes[1]])
-                    );
+                    buf_16.push(u16::from_le_bytes([bytes[0], bytes[1]]));
                 }
-                
+
                 #[derive(Serialize)]
                 struct OutgoingImage {
                     version: String,
@@ -723,7 +749,7 @@ impl Detector {
                     bottom_boder: usize,
                     left_boder: usize,
                     right_boder: usize,
-                    image_data: Vec<u16>
+                    image_data: Vec<u16>,
                 }
                 let oi = OutgoingImage {
                     version: VERSION.to_string(),
@@ -734,7 +760,7 @@ impl Detector {
                     bottom_boder: self.config.bottom_border as usize,
                     left_boder: self.config.left_border as usize,
                     right_boder: self.config.right_border as usize,
-                    image_data: buf_16
+                    image_data: buf_16,
                 };
                 let s = serde_json::to_string(&oi).unwrap();
                 return Ok(s);
@@ -752,13 +778,13 @@ impl Detector {
             s.1
         } else {
             warn!("Failed to get serial number");
-            return Err(SysError::Command("Failed to get serial number".to_owned()))
+            return Err(SysError::Command("Failed to get serial number".to_owned()));
         };
         let panel = if let Ok(p) = self.command2(("Get PanelID", None)) {
             p.1
         } else {
             warn!("Failed to get panel id");
-            return Err(SysError::Command("Failed to get panel id".to_owned()))
+            return Err(SysError::Command("Failed to get panel id".to_owned()));
         };
         let macadd = if let Ok(m) = self.command2(("Get MACAddress", None)) {
             m.1
@@ -776,6 +802,8 @@ impl Detector {
     }
     /// Responsible for sending all commands to the detector with the only exceptions occuring in [`Self::connect()`] when reserving the connection to the detector.
     fn command2(&mut self, cmd: Command) -> Result<Return, SysError> {
+        let detector_ipv4: Ipv4Addr = Ipv4Addr::from_str(self.ifconfig.detector_ip.as_str())
+            .expect("Invalid detector IPv4 in config.");
         // data prep
         let command = cmd.0;
         let arguments = cmd.1;
@@ -798,30 +826,41 @@ impl Detector {
         let ctxt: String;
         if let Some(args) = arguments {
             // (patch 10) issue here with args length
-            ctxt = format!("{:04x}", self.command_count) + &format!("{:04x}", command.len() + 1 + args.len()) + &command + " " + &args;
+            ctxt = format!("{:04x}", self.command_count)
+                + &format!("{:04x}", command.len() + 1 + args.len())
+                + &command
+                + " "
+                + &args;
         } else {
-            ctxt = format!("{:04x}", self.command_count) + &format!("{:04x}", command.len()) + &command
+            ctxt =
+                format!("{:04x}", self.command_count) + &format!("{:04x}", command.len()) + &command
         }
 
         // sending the command
         let bytes_sent = match lc.write(ctxt.as_bytes()) {
             Ok(b) => b,
             Err(e) => {
-                // patch 23: attempt reconnection on peer resets 
+                // patch 23: attempt reconnection on peer resets
                 match e.kind() {
                     ErrorKind::ConnectionReset => {
-                        warn!("[command2] Connection reset by peer. Attempting to reinitalize the command stream...");
-                        self.command_stream =
-                            match TcpStream::connect((DETECTOR_IPV4, self.remote_command_port)) {
-                                Ok(s) => {
-                                    info!("[command2] Reopened command stream (HOST -> REMOTE)");
-                                    Some(s)
-                                }
-                                Err(e) => {
-                                    error!("[command2] Failed to reopen command stream (HOST -> REMOTE): {e}");
-                                    return Err(SysError::Connection("Failed to open command stream"));
-                                }
-                            };
+                        warn!(
+                            "[command2] Connection reset by peer. Attempting to reinitalize the command stream..."
+                        );
+                        self.command_stream = match TcpStream::connect((
+                            detector_ipv4,
+                            self.remote_command_port,
+                        )) {
+                            Ok(s) => {
+                                info!("[command2] Reopened command stream (HOST -> REMOTE)");
+                                Some(s)
+                            }
+                            Err(e) => {
+                                error!(
+                                    "[command2] Failed to reopen command stream (HOST -> REMOTE): {e}"
+                                );
+                                return Err(SysError::Connection("Failed to open command stream"));
+                            }
+                        };
                         return Err(SysError::Connection("Reset by peer"));
                     }
                     ErrorKind::BrokenPipe => {
@@ -830,7 +869,9 @@ impl Detector {
                     }
                     _ => {
                         println!("[command2] Failed to send \"{command}\" to the detector: {e:?}");
-                        return Err(SysError::Command("Failed to send command to detector".to_string()));
+                        return Err(SysError::Command(
+                            "Failed to send command to detector".to_string(),
+                        ));
                     }
                 }
             }

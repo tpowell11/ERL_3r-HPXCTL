@@ -1,12 +1,12 @@
-use serde::{Serialize, Deserialize};
 use core::panic;
-use std::io::{Read, Write};
-use std::{env::home_dir, sync::LazyLock};
-use std::path::Path;
-use std::{format, io};
-use toml::{to_string_pretty, from_str};
-use whoami::username;
 use log::{error, info};
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
+use std::path::Path;
+use std::{env::home_dir, sync::LazyLock};
+use std::{format, io};
+use toml::{from_str, to_string_pretty};
+use whoami::username;
 
 /// contains all possible configuration file locations.
 /// avalible paths vary based on operating system.
@@ -22,7 +22,6 @@ static CONFIG_PATHS: LazyLock<Vec<String>> = LazyLock::new(|| {
         format!("/home/{user}/hpx-ctl.toml"),
         format!("/home/{user}/.hpx-ctl/config.toml"),
         format!("/home/{user}/.hpx-ctl.toml"),
-
     ];
     #[cfg(target_os = "windows")]
     let paths = vec![
@@ -52,7 +51,7 @@ fn list_avalible_configs() -> Option<Vec<String>> {
     if v.len() == 0 {
         return None;
     } else {
-        return Some(v)
+        return Some(v);
     }
 }
 
@@ -65,65 +64,68 @@ fn write_config(path: String) -> io::Result<()> {
         Ok(f) => f,
         Err(why) => {
             error!("Failed to create default configuration file: {why:?}");
-            return Err(io::Error::new(io::ErrorKind::Other, "Failed to write default config."))
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to write default config.",
+            ));
         }
     };
     config_file.write_all(text.as_bytes())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Config {
     pub detector_interface_name: String,
     pub server_port: u16,
+    pub detector_mac: String,
+    pub detector_ip: String,
+    pub interface_ip: String,
 }
 impl Config {
     pub fn load() -> Self {
         info!("Loading config...");
         let config_paths = list_avalible_configs();
+        info!("Found configs at: {config_paths:?}");
         if config_paths.is_none() {
             let p = CONFIG_PATHS[1].clone();
             info!("No config found! Creating one at {p}");
             let _ = write_config(p);
-            return Self::default()
+            return Self::default();
         } else {
-            let mut config_candidates: Vec<Result<Config,()>> = Vec::new();
+            let mut config_candidates: Vec<Result<Config, ()>> = Vec::new();
             for config_path in config_paths.unwrap() {
                 match std::fs::File::open(config_path) {
                     Ok(mut f) => {
                         let mut text: Vec<u8> = Vec::new();
-                        match f.read(& mut text) {
-                            Ok(_) => {
-                                match String::from_utf8(text) {
-                                    Ok(s) => {
-                                        match from_str(&s) {
-                                            Ok(config) => config_candidates.push(Ok(config)),
-                                            Err(_) => {
-                                                config_candidates.push(Err(()));
-                                                continue
-                                            },
-                                        }
-                                    }
+                        match f.read(&mut text) {
+                            Ok(_) => match String::from_utf8(text) {
+                                Ok(s) => match from_str(&s) {
+                                    Ok(config) => config_candidates.push(Ok(config)),
                                     Err(_) => {
                                         config_candidates.push(Err(()));
-                                        continue
+                                        continue;
                                     }
+                                },
+                                Err(_) => {
+                                    config_candidates.push(Err(()));
+                                    continue;
                                 }
-                            }
+                            },
                             Err(_) => {
                                 config_candidates.push(Err(()));
-                                continue
+                                continue;
                             }
                         }
                     }
                     Err(_) => {
                         config_candidates.push(Err(()));
-                        continue
+                        continue;
                     }
                 }
             }
             for candidate in config_candidates {
                 if let Ok(c) = candidate {
-                    return c
+                    return c;
                 }
             }
             return Config::default();
@@ -132,9 +134,12 @@ impl Config {
 }
 impl Default for Config {
     fn default() -> Self {
-        Self { 
-            detector_interface_name: "ens19".to_owned(), 
-            server_port: 5001_u16 
+        Self {
+            detector_interface_name: "".to_owned(),
+            server_port: 5001_u16,
+            detector_mac: "".to_owned(),
+            detector_ip: "".to_owned(),
+            interface_ip: "".to_owned(),
         }
     }
 }
