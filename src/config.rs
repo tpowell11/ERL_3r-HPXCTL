@@ -133,7 +133,7 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self { 
-            detector_interface_name: "eth1".to_owned(), 
+            detector_interface_name: "ens19".to_owned(), 
             server_port: 5001_u16 
         }
     }

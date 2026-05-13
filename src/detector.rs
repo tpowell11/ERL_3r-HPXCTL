@@ -355,17 +355,17 @@ impl Detector {
 
         // patch 23: remove gratuitous TCP keepalives & refactor
         // patch 23: use new keepalive implementation
-        let (ttx, trx) = channel::<KeepAliveThreadMsg>();
-        match create_keepalive_thread(self.command_stream.as_ref().unwrap().try_clone().unwrap(), trx, "command".to_string()){
-            Ok(h) => {
-                self.tcp_keepalive_sender = Some(ttx);
-                self.tcp_keepalive_handle = Some(h);
-            }
-            Err(e) => {
-                error!("Failed to start TCP keepalive thread: {e:?}");
-                return Err(SysError::Connection("Failed to start tcp keepalive thread"));
-            }
-        };
+        //let (ttx, trx) = channel::<KeepAliveThreadMsg>();
+        //match create_keepalive_thread(self.command_stream.as_ref().unwrap().try_clone().unwrap(), trx, "command".to_string()){
+        //    Ok(h) => {
+        //        self.tcp_keepalive_sender = Some(ttx);
+        //        self.tcp_keepalive_handle = Some(h);
+        //    }
+        //    Err(e) => {
+        //        error!("Failed to start TCP keepalive thread: {e:?}");
+        //        return Err(SysError::Connection("Failed to start tcp keepalive thread"));
+        //    }
+        //};
 
         // patch 23.4: keepalive on log thread
         match create_log_thread(self.log_stream.as_ref().unwrap().try_clone().unwrap()) {
@@ -392,17 +392,17 @@ impl Detector {
         // }
         
         // patch 28: add keepalive to the root stream
-        let (rtx, rrx) = channel::<KeepAliveThreadMsg>();
-        match create_keepalive_thread(self.root_stream.as_ref().unwrap().try_clone().unwrap(), rrx, "root".to_string()) {
-            Ok(h) => {
-                self.root_keepalive_sender = Some(rtx);
-                self.root_keepalive_handle = Some(h);
-            }
-            Err(e) => {
-                error!("Failed to create root stream keepalive");
-                return Err(SysError::Connection("Failed to create root keepalive"))
-            }
-        }
+        //let (rtx, rrx) = channel::<KeepAliveThreadMsg>();
+        //match create_keepalive_thread(self.root_stream.as_ref().unwrap().try_clone().unwrap(), rrx, "root".to_string()) {
+        //    Ok(h) => {
+        //        self.root_keepalive_sender = Some(rtx);
+        //        self.root_keepalive_handle = Some(h);
+        //    }
+        //    Err(e) => {
+        //        error!("Failed to create root stream keepalive");
+        //        return Err(SysError::Connection("Failed to create root keepalive"))
+        //    }
+        //}
 
         self.has_connected = true;
 
@@ -786,10 +786,10 @@ impl Detector {
 
         // patch 23: remove tcp kal pausing
         // patch 23.2: reimplement tcp kal pausing
-        match self.tcp_keepalive_sender.as_ref().unwrap().send(KeepAliveThreadMsg::Pause(Duration::from_micros(500))){ //23.6 500 -> 5 23.8 5 -> 500us
-            Ok(_) => info!("[command2] paused tcp keepalive"),
-            Err(e) => warn!("[command2] failed to pause tcp keepalive: {e:?}")
-        };
+        //match self.tcp_keepalive_sender.as_ref().unwrap().send(KeepAliveThreadMsg::Pause(Duration::from_micros(500))){ //23.6 500 -> 5 23.8 5 -> 500us
+        //    Ok(_) => info!("[command2] paused tcp keepalive"),
+        //    Err(e) => warn!("[command2] failed to pause tcp keepalive: {e:?}")
+        //};
         std::thread::sleep(Duration::from_micros(250)); //23.3 (10ms) 23.8 (250us)
 
         let mut lc = self.command_stream.as_ref().unwrap().try_clone().unwrap();
